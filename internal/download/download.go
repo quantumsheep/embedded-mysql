@@ -3,6 +3,7 @@ package download
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -30,6 +31,10 @@ func tarballName(version string) (string, error) {
 			return fmt.Sprintf("mysql-%s-linux-glibc2.28-x86_64-minimal.tar.xz", version), nil
 		case "arm64":
 			return fmt.Sprintf("mysql-%s-linux-glibc2.28-aarch64.tar.xz", version), nil
+		}
+	case "windows":
+		if runtime.GOARCH == "amd64" {
+			return fmt.Sprintf("mysql-%s-winx64.zip", version), nil
 		}
 	}
 
@@ -86,7 +91,7 @@ func EnsureBinaries(options Options) (string, error) {
 		urls = downloadURLs(options.Version, name)
 	}
 
-	base := filepath.Join(cacheDir, strings.TrimSuffix(strings.TrimSuffix(name, ".tar.gz"), ".tar.xz"))
+	base := filepath.Join(cacheDir, strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, ".tar.gz"), ".tar.xz"), ".zip"))
 	marker := filepath.Join(base, ".embedded-mysql-ok")
 
 	_, err := os.Stat(marker)
@@ -121,7 +126,12 @@ func EnsureBinaries(options Options) (string, error) {
 		return "", err
 	}
 
-	err = extract(archiveFile, strings.HasSuffix(name, ".xz"), base)
+	if strings.HasSuffix(name, ".zip") {
+		err = extractZip(archiveFile, base)
+	} else {
+		err = extractTar(archiveFile, strings.HasSuffix(name, ".xz"), base)
+	}
+
 	if err != nil {
 		return "", err
 	}
@@ -186,8 +196,17 @@ func download(urls []string, destination io.Writer, logger io.Writer) error {
 	return lastError
 }
 
-// extract writes bin/mysqld, the dylibs of bin/, lib/ and share/ from the tarball into base. It strips the top-level directory and skips the rest of the archive to save disk space.
-func extract(archive io.Reader, isXZ bool, base string) error {
+// keep reports whether an archive entry belongs in the cache: the mysqld binary, the shared libraries of bin/, lib/ and share/. The rest of the archive stays out to save disk space.
+func keep(relativePath string) bool {
+	// mysqld on macOS loads dylibs from bin/ via @loader_path. mysqld on Windows loads dlls from bin/.
+	return relativePath == "bin/mysqld" || relativePath == "bin/mysqld.exe" ||
+		(strings.HasPrefix(relativePath, "bin/") && (strings.Contains(relativePath, ".dylib") || strings.HasSuffix(relativePath, ".dll"))) ||
+		strings.HasPrefix(relativePath, "lib/") ||
+		strings.HasPrefix(relativePath, "share/")
+}
+
+// extractTar writes the kept entries of the tarball into base. It strips the top-level directory.
+func extractTar(archive io.Reader, isXZ bool, base string) error {
 	var reader io.Reader
 
 	var err error
@@ -219,12 +238,7 @@ func extract(archive io.Reader, isXZ bool, base string) error {
 			continue
 		}
 
-		// mysqld on macOS loads dylibs from bin/ via @loader_path.
-		keep := relativePath == "bin/mysqld" ||
-			(strings.HasPrefix(relativePath, "bin/") && strings.Contains(relativePath, ".dylib")) ||
-			strings.HasPrefix(relativePath, "lib/") ||
-			strings.HasPrefix(relativePath, "share/")
-		if !keep {
+		if !keep(relativePath) {
 			continue
 		}
 
@@ -262,6 +276,55 @@ func extract(archive io.Reader, isXZ bool, base string) error {
 			}
 		}
 	}
+}
+
+// extractZip writes the kept entries of the zip archive into base. It strips the top-level directory.
+func extractZip(archive *os.File, base string) error {
+	info, err := archive.Stat()
+	if err != nil {
+		return err
+	}
+
+	reader, err := zip.NewReader(archive, info.Size())
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range reader.File {
+		_, relativePath, found := strings.Cut(filepath.ToSlash(entry.Name), "/")
+		if !found || relativePath == "" || strings.HasSuffix(relativePath, "/") {
+			continue
+		}
+
+		if !keep(relativePath) {
+			continue
+		}
+
+		if strings.Contains(relativePath, "..") {
+			return fmt.Errorf("embedded-mysql: unsafe path in archive: %s", entry.Name)
+		}
+
+		destinationPath := filepath.Join(base, filepath.FromSlash(relativePath))
+
+		err = os.MkdirAll(filepath.Dir(destinationPath), 0o755)
+		if err != nil {
+			return err
+		}
+
+		content, err := entry.Open()
+		if err != nil {
+			return err
+		}
+
+		err = writeFile(destinationPath, content, entry.Mode()&0o777)
+		_ = content.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func writeFile(path string, content io.Reader, mode os.FileMode) error {

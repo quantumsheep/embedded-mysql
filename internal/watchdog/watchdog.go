@@ -7,7 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
+
+	"github.com/quantumsheep/embedded-mysql/internal/proc"
 )
 
 const watchedPidEnvironmentVariable = "EMBEDDED_MYSQL_WATCHDOG_PID"
@@ -25,7 +26,7 @@ func init() {
 	}
 
 	_, _ = io.Copy(io.Discard, os.Stdin)
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = proc.Terminate(pid)
 	os.Exit(0)
 }
 

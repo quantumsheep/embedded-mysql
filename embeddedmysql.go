@@ -10,12 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/quantumsheep/embedded-mysql/internal/download"
+	"github.com/quantumsheep/embedded-mysql/internal/proc"
 	"github.com/quantumsheep/embedded-mysql/internal/watchdog"
 )
 
@@ -158,6 +159,9 @@ func (m *EmbeddedMySQL) Start() error {
 	}
 
 	mysqldPath := filepath.Join(base, "bin", "mysqld")
+	if runtime.GOOS == "windows" {
+		mysqldPath += ".exe"
+	}
 
 	// mysqld rejects a socket path longer than 103 characters, so the socket, the pid file and the init file live in a short temporary directory.
 	m.workDir, err = os.MkdirTemp("", "emysql-")
@@ -338,7 +342,7 @@ func (m *EmbeddedMySQL) Stop() error {
 		m.watchdog = nil
 	}
 
-	_ = m.cmd.Process.Signal(syscall.SIGTERM)
+	_ = proc.Terminate(m.cmd.Process.Pid)
 
 	select {
 	case <-m.waitDone:
@@ -382,30 +386,28 @@ func stopStaleServer(pidFilePath string, logger io.Writer) error {
 	}
 
 	// A pid file that a crash left behind can name a recycled pid. The process name check keeps the signal away from an unrelated process.
-	if !processIsMysqld(pid) {
+	if !proc.IsMysqld(pid) {
 		return nil
 	}
 
 	fmt.Fprintf(logger, "embedded-mysql: stopping stale server with pid %d\n", pid)
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = proc.Terminate(pid)
 
 	deadline := time.Now().Add(30 * time.Second)
 
 	for time.Now().Before(deadline) {
-		err = syscall.Kill(pid, 0)
-		if err != nil {
+		if !proc.Alive(pid) {
 			return nil
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = proc.Kill(pid)
 	deadline = time.Now().Add(5 * time.Second)
 
 	for time.Now().Before(deadline) {
-		err = syscall.Kill(pid, 0)
-		if err != nil {
+		if !proc.Alive(pid) {
 			return nil
 		}
 
@@ -413,15 +415,6 @@ func stopStaleServer(pidFilePath string, logger io.Writer) error {
 	}
 
 	return fmt.Errorf("embedded-mysql: stale server with pid %d did not stop", pid)
-}
-
-func processIsMysqld(pid int) bool {
-	output, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-
-	return strings.HasSuffix(strings.TrimSpace(string(output)), "mysqld")
 }
 
 func freePort() (uint32, error) {

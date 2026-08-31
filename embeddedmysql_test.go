@@ -9,11 +9,11 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/quantumsheep/embedded-mysql/internal/proc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -263,8 +263,7 @@ func TestStaleServerStop(t *testing.T) {
 
 	_, databaseConnection := startServer(t, config)
 
-	err = syscall.Kill(stalePid, 0)
-	require.Error(t, err, "the stale server still runs")
+	require.False(t, proc.Alive(stalePid), "the stale server still runs")
 
 	err = databaseConnection.Ping()
 	require.NoError(t, err)
@@ -289,7 +288,7 @@ func TestWatchdogStopsOrphan(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return syscall.Kill(orphanPid, 0) != nil
+		return !proc.Alive(orphanPid)
 	}, 30*time.Second, 500*time.Millisecond, "the watchdog did not stop the orphan server")
 }
 
