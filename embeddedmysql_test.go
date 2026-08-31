@@ -288,7 +288,11 @@ func TestWatchdogStopsOrphan(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return !proc.Alive(orphanPid)
+		if proc.Alive(orphanPid) {
+			return false
+		}
+
+		return os.RemoveAll(runtimePath) == nil
 	}, 30*time.Second, 500*time.Millisecond, "the watchdog did not stop the orphan server")
 }
 
