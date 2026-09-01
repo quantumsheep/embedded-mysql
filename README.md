@@ -1,8 +1,8 @@
 # embedded-mysql
 
-Run a real MySQL server from Go code, with no installation step. This library is the MySQL equivalent of [embedded-postgres](https://github.com/fergusstrange/embedded-postgres).
+Run a real MySQL or MariaDB server from Go code, with no installation step. This library is the MySQL equivalent of [embedded-postgres](https://github.com/fergusstrange/embedded-postgres).
 
-The library downloads the official MySQL binaries from `cdn.mysql.com`, caches them in `~/.embedded-mysql`, and starts `mysqld` with an isolated data directory. The first start downloads the binaries. Each later start uses the cache and takes a few seconds.
+The library downloads the official binaries, caches them in `~/.embedded-mysql`, and starts the server with an isolated data directory. The first start downloads the binaries. Each later start uses the cache and takes a few seconds.
 
 ## Usage
 
@@ -49,30 +49,43 @@ server := embeddedmysql.NewDatabase(embeddedmysql.DefaultConfig().
 	Logger(os.Stderr))
 ```
 
-| Setter         | Default             | Effect                                                                                                                         |
-| -------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `Version`      | `8.4.6`             | The MySQL version to download.                                                                                                 |
-| `Port`         | `0`                 | The TCP port. Port `0` selects a free port.                                                                                    |
-| `Username`     | `root`              | The user that the server creates at start.                                                                                     |
-| `Password`     | empty               | The password of the user.                                                                                                      |
-| `Database`     | `test`              | The database that the server creates at start.                                                                                 |
-| `RuntimePath`  | temporary           | The directory for the data files. A temporary directory is deleted on `Stop`. A set path is kept, and data survives a restart. |
-| `CachePath`    | `~/.embedded-mysql` | The directory for the downloaded binaries.                                                                                     |
-| `BinaryURL`    | derived             | A full URL to a MySQL tarball, for platforms that the default URL scheme does not cover.                                       |
-| `StartTimeout` | `60s`               | The maximum wait for the server to accept connections.                                                                         |
-| `Logger`       | discard             | A writer that receives the `mysqld` output.                                                                                    |
+| Setter         | Default             | Effect                                                                                                                             |
+| -------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `Flavor`       | `MySQL`             | The server implementation, `MySQL` or `MariaDB`.                                                                                   |
+| `Version`      | per flavor          | The server version to download. MySQL defaults to `8.4.6`, MariaDB to `11.8.8`.                                                    |
+| `Port`         | `0`                 | The TCP port. Port `0` selects a free port.                                                                                        |
+| `Username`     | `root`              | The user that the server creates at start.                                                                                         |
+| `Password`     | empty               | The password of the user.                                                                                                          |
+| `Database`     | `test`              | The database that the server creates at start.                                                                                     |
+| `RuntimePath`  | temporary           | The directory for the data files. A temporary directory is deleted on `Stop`. A set path is kept, and data survives a restart.     |
+| `CachePath`    | `~/.embedded-mysql` | The directory for the downloaded binaries.                                                                                         |
+| `BinaryURL`    | derived             | A full URL to a MySQL tarball, for platforms that the default URL scheme does not cover.                                           |
+| `BasePath`     | empty               | The directory of an installed server, the one that contains `bin/mysqld` or `bin/mariadbd`. Skips the download, ignores `Version`. |
+| `StartTimeout` | `60s`               | The maximum wait for the server to accept connections.                                                                             |
+| `Logger`       | discard             | A writer that receives the `mysqld` output.                                                                                        |
 
 `server.DSN()` returns a data source name for `github.com/go-sql-driver/mysql`.
 `server.Port()` returns the selected port.
 
+## MariaDB
+
+```go
+server := embeddedmysql.NewDatabase(embeddedmysql.DefaultConfig().
+	Flavor(embeddedmysql.MariaDB))
+```
+
+`server.DSN()` works unchanged: `github.com/go-sql-driver/mysql` speaks to MariaDB.
+
+MariaDB publishes no standalone macOS binaries, so on macOS the library uses a [Homebrew](https://formulae.brew.sh/formula/mariadb) installation: run `brew install mariadb` once, and the library finds it automatically. `BasePath` points to any other installation.
+
 ## Supported platforms
 
-| Platform                   | Source archive                                        |
-| -------------------------- | ----------------------------------------------------- |
-| macOS arm64 / x86_64       | `mysql-VERSION-macos15-ARCH.tar.gz`                   |
-| Linux x86_64 (glibc 2.28+) | `mysql-VERSION-linux-glibc2.28-x86_64-minimal.tar.xz` |
-| Linux arm64 (glibc 2.28+)  | `mysql-VERSION-linux-glibc2.28-aarch64.tar.xz`        |
-| Windows x86_64             | `mysql-VERSION-winx64.zip`                            |
+| Platform                   | MySQL source archive                                  | MariaDB source archive                        |
+| -------------------------- | ----------------------------------------------------- | --------------------------------------------- |
+| macOS arm64 / x86_64       | `mysql-VERSION-macos15-ARCH.tar.gz`                   | Homebrew `mariadb`, found automatically       |
+| Linux x86_64 (glibc 2.28+) | `mysql-VERSION-linux-glibc2.28-x86_64-minimal.tar.xz` | `mariadb-VERSION-linux-systemd-x86_64.tar.gz` |
+| Linux arm64 (glibc 2.28+)  | `mysql-VERSION-linux-glibc2.28-aarch64.tar.xz`        | none published, set `BinaryURL`               |
+| Windows x86_64             | `mysql-VERSION-winx64.zip`                            | `mariadb-VERSION-winx64.zip`                  |
 
 ## Tests
 

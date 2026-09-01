@@ -1,4 +1,4 @@
-// Package download fetches the official MySQL binary tarball and extracts it into the cache.
+// Package download fetches the official MySQL or MariaDB binary tarball and extracts it into the cache.
 package download
 
 import (
@@ -16,7 +16,19 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-func tarballName(version string) (string, error) {
+func tarballName(flavor, version string) (string, error) {
+	if flavor == "mariadb" {
+		// MariaDB publishes no official binaries for macOS or Linux arm64.
+		switch {
+		case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
+			return fmt.Sprintf("mariadb-%s-linux-systemd-x86_64.tar.gz", version), nil
+		case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
+			return fmt.Sprintf("mariadb-%s-winx64.zip", version), nil
+		}
+
+		return "", fmt.Errorf("embedded-mysql: no official MariaDB binaries for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
 	switch runtime.GOOS {
 	case "darwin":
 		architecture := "arm64"
@@ -41,8 +53,17 @@ func tarballName(version string) (string, error) {
 	return "", fmt.Errorf("embedded-mysql: unsupported platform %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
-// The "Downloads" host serves only the most recent release of a series. The "archives" host serves all releases.
-func downloadURLs(version, name string) []string {
+// The MySQL "Downloads" host serves only the most recent release of a series. The MySQL "archives" host and the MariaDB archive host serve all releases.
+func downloadURLs(flavor, version, name string) []string {
+	if flavor == "mariadb" {
+		directory := "bintar-linux-systemd-x86_64"
+		if strings.HasSuffix(name, ".zip") {
+			directory = "winx64-packages"
+		}
+
+		return []string{fmt.Sprintf("https://archive.mariadb.org/mariadb-%s/%s/%s", version, directory, name)}
+	}
+
 	parts := strings.SplitN(version, ".", 3)
 
 	series := parts[0]
@@ -58,6 +79,7 @@ func downloadURLs(version, name string) []string {
 
 // Options selects the tarball to fetch and the cache to fill.
 type Options struct {
+	Flavor    string
 	Version   string
 	CachePath string
 	BinaryURL string
@@ -83,12 +105,12 @@ func EnsureBinaries(options Options) (string, error) {
 	if options.BinaryURL == "" {
 		var err error
 
-		name, err = tarballName(options.Version)
+		name, err = tarballName(options.Flavor, options.Version)
 		if err != nil {
 			return "", err
 		}
 
-		urls = downloadURLs(options.Version, name)
+		urls = downloadURLs(options.Flavor, options.Version, name)
 	}
 
 	base := filepath.Join(cacheDir, strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, ".tar.gz"), ".tar.xz"), ".zip"))
@@ -196,13 +218,21 @@ func download(urls []string, destination io.Writer, logger io.Writer) error {
 	return lastError
 }
 
-// keep reports whether an archive entry belongs in the cache: the mysqld binary, the shared libraries of bin/, lib/ and share/. The rest of the archive stays out to save disk space.
+// keep reports whether an archive entry belongs in the cache: the server binary, the install program of MariaDB with its helpers, the shared libraries of bin/, lib/, share/ and scripts/. The rest of the archive stays out to save disk space.
 func keep(relativePath string) bool {
+	switch relativePath {
+	case "bin/mysqld", "bin/mysqld.exe",
+		"bin/mariadbd", "bin/mariadbd.exe",
+		// mariadb-install-db creates the system tables. The Unix script needs my_print_defaults and resolveip.
+		"bin/mariadb-install-db.exe", "bin/my_print_defaults", "bin/resolveip":
+		return true
+	}
+
 	// mysqld on macOS loads dylibs from bin/ via @loader_path. mysqld on Windows loads dlls from bin/.
-	return relativePath == "bin/mysqld" || relativePath == "bin/mysqld.exe" ||
-		(strings.HasPrefix(relativePath, "bin/") && (strings.Contains(relativePath, ".dylib") || strings.HasSuffix(relativePath, ".dll"))) ||
+	return (strings.HasPrefix(relativePath, "bin/") && (strings.Contains(relativePath, ".dylib") || strings.HasSuffix(relativePath, ".dll"))) ||
 		strings.HasPrefix(relativePath, "lib/") ||
-		strings.HasPrefix(relativePath, "share/")
+		strings.HasPrefix(relativePath, "share/") ||
+		strings.HasPrefix(relativePath, "scripts/")
 }
 
 // extractTar writes the kept entries of the tarball into base. It strips the top-level directory.

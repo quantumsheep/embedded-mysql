@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -206,6 +207,35 @@ func TestServerSuite(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 200, counter)
 	})
+}
+
+func TestMariaDB(t *testing.T) {
+	supported := runtime.GOARCH == "amd64" && (runtime.GOOS == "linux" || runtime.GOOS == "windows")
+	if runtime.GOOS == "darwin" && homebrewMariaDB() != "" {
+		supported = true
+	}
+
+	if !supported {
+		t.Skip("no MariaDB binaries for this platform")
+	}
+
+	server, databaseConnection := startServer(t, DefaultConfig().Flavor(MariaDB).Logger(os.Stderr))
+	require.NotZero(t, server.Port())
+
+	var version string
+
+	err := databaseConnection.QueryRow("SELECT VERSION()").Scan(&version)
+	require.NoError(t, err)
+	require.Contains(t, version, "MariaDB")
+
+	mustExec(t, databaseConnection, "CREATE TABLE kv (k VARCHAR(64) PRIMARY KEY, v VARCHAR(64))")
+	mustExec(t, databaseConnection, "INSERT INTO kv VALUES ('key', 'value')")
+
+	var value string
+
+	err = databaseConnection.QueryRow("SELECT v FROM kv WHERE k = 'key'").Scan(&value)
+	require.NoError(t, err)
+	require.Equal(t, "value", value)
 }
 
 func TestCustomUserAndDatabase(t *testing.T) {

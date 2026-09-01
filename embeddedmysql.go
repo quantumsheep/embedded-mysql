@@ -1,4 +1,4 @@
-// Package embeddedmysql runs a real MySQL server for tests and local development. It downloads the official MySQL binaries once, caches them, and starts mysqld with an isolated data directory.
+// Package embeddedmysql runs a real MySQL or MariaDB server for tests and local development. It downloads the official binaries once, caches them, and starts the server with an isolated data directory.
 package embeddedmysql
 
 import (
@@ -20,8 +20,19 @@ import (
 	"github.com/quantumsheep/embedded-mysql/internal/watchdog"
 )
 
+// Flavor selects the server implementation.
+type Flavor string
+
+const (
+	// MySQL runs the official MySQL server binaries.
+	MySQL Flavor = "mysql"
+	// MariaDB runs the official MariaDB server binaries.
+	MariaDB Flavor = "mariadb"
+)
+
 // Config holds the settings of an embedded server. Build it with DefaultConfig and change it with the fluent setters.
 type Config struct {
+	flavor       Flavor
 	version      string
 	port         uint32
 	username     string
@@ -30,14 +41,15 @@ type Config struct {
 	runtimePath  string
 	cachePath    string
 	binaryURL    string
+	basePath     string
 	startTimeout time.Duration
 	logger       io.Writer
 }
 
-// DefaultConfig returns the default settings: MySQL 8.4.6, user "root" with no password, database "test", and an automatic free port.
+// DefaultConfig returns the default settings: MySQL in its default version, user "root" with no password, database "test", and an automatic free port.
 func DefaultConfig() Config {
 	return Config{
-		version:      "8.4.6",
+		flavor:       MySQL,
 		username:     "root",
 		database:     "test",
 		startTimeout: 60 * time.Second,
@@ -45,7 +57,14 @@ func DefaultConfig() Config {
 	}
 }
 
-// Version sets the MySQL version to download, for example "8.4.6" or "9.4.0".
+// Flavor sets the server implementation, MySQL or MariaDB. The default is MySQL.
+func (c Config) Flavor(flavor Flavor) Config {
+	c.flavor = flavor
+
+	return c
+}
+
+// Version sets the server version to download, for example "8.4.6" for MySQL or "11.8.8" for MariaDB. When not set, the flavor default applies: MySQL 8.4.6, MariaDB 11.8.8.
 func (c Config) Version(version string) Config {
 	c.version = version
 
@@ -101,6 +120,13 @@ func (c Config) BinaryURL(url string) Config {
 	return c
 }
 
+// BasePath sets the directory of an installed server, the one that contains bin/mysqld or bin/mariadbd, for example "/opt/homebrew/opt/mariadb". The library then skips the download, and Version has no effect.
+func (c Config) BasePath(path string) Config {
+	c.basePath = path
+
+	return c
+}
+
 // StartTimeout sets the maximum wait for the server to accept connections.
 func (c Config) StartTimeout(timeout time.Duration) Config {
 	c.startTimeout = timeout
@@ -148,19 +174,54 @@ func (m *EmbeddedMySQL) Start() error {
 		m.config.logger = io.Discard
 	}
 
-	base, err := download.EnsureBinaries(download.Options{
-		Version:   m.config.version,
-		CachePath: m.config.cachePath,
-		BinaryURL: m.config.binaryURL,
-		Logger:    m.config.logger,
-	})
-	if err != nil {
-		return err
+	flavor := m.config.flavor
+	if flavor == "" {
+		flavor = MySQL
 	}
 
-	mysqldPath := filepath.Join(base, "bin", "mysqld")
+	serverName := "mysqld"
+	if flavor == MariaDB {
+		serverName = "mariadbd"
+	}
+
+	// An installed server keeps its own layout and needs no download.
+	base := m.config.basePath
+	if base == "" && flavor == MariaDB && runtime.GOOS == "darwin" && m.config.binaryURL == "" {
+		// MariaDB publishes no official macOS binaries, so the Homebrew installation fills the gap.
+		base = homebrewMariaDB()
+		if base == "" {
+			return errors.New(`embedded-mysql: no official MariaDB binaries for macOS; run "brew install mariadb" or set BasePath`)
+		}
+	}
+
+	installed := base != ""
+
+	var err error
+
+	if base == "" {
+		version := m.config.version
+		if version == "" {
+			version = "8.4.6"
+			if flavor == MariaDB {
+				version = "11.8.8"
+			}
+		}
+
+		base, err = download.EnsureBinaries(download.Options{
+			Flavor:    string(flavor),
+			Version:   version,
+			CachePath: m.config.cachePath,
+			BinaryURL: m.config.binaryURL,
+			Logger:    m.config.logger,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	serverPath := filepath.Join(base, "bin", serverName)
 	if runtime.GOOS == "windows" {
-		mysqldPath += ".exe"
+		serverPath += ".exe"
 	}
 
 	// mysqld rejects a socket path longer than 103 characters, so the socket, the pid file and the init file live in a short temporary directory.
@@ -196,12 +257,21 @@ func (m *EmbeddedMySQL) Start() error {
 		"--no-defaults",
 		"--basedir=" + base,
 		"--datadir=" + dataDir,
-		"--lc-messages-dir=" + filepath.Join(base, "share"),
+	}
+
+	// The extracted tarballs need the override because their compiled-in paths point elsewhere. An installed server has correct compiled-in paths, and its layout varies.
+	if !installed {
+		commonArguments = append(commonArguments, "--lc-messages-dir="+filepath.Join(base, "share"))
+	}
+
+	// mysqld and mariadbd refuse to run as root without an explicit --user, and containers often run as root.
+	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
+		commonArguments = append(commonArguments, "--user=root")
 	}
 
 	_, err = os.Stat(filepath.Join(dataDir, "mysql"))
 	if err != nil {
-		initializeCommand := exec.Command(mysqldPath, append(commonArguments, "--initialize-insecure")...)
+		initializeCommand := initializeCommand(flavor, serverPath, base, dataDir, commonArguments)
 
 		var initializeLog bytes.Buffer
 
@@ -242,12 +312,15 @@ func (m *EmbeddedMySQL) Start() error {
 		"--socket="+filepath.Join(m.workDir, "mysql.sock"),
 		"--pid-file="+pidFilePath,
 		"--init-file="+initFilePath,
-		"--mysqlx=OFF",
-		"--disable-log-bin",
 	)
 
+	if flavor == MySQL {
+		// MariaDB knows neither option. Its binary log is off by default.
+		arguments = append(arguments, "--mysqlx=OFF", "--disable-log-bin")
+	}
+
 	m.serverLog = &bytes.Buffer{}
-	m.cmd = exec.Command(mysqldPath, arguments...)
+	m.cmd = exec.Command(serverPath, arguments...)
 	m.cmd.Stdout = io.MultiWriter(m.serverLog, m.config.logger)
 	m.cmd.Stderr = m.cmd.Stdout
 
@@ -281,6 +354,45 @@ func (m *EmbeddedMySQL) Start() error {
 	}
 
 	return nil
+}
+
+// homebrewMariaDB returns the base directory of a Homebrew MariaDB installation, or an empty string.
+func homebrewMariaDB() string {
+	for _, prefix := range []string{"/opt/homebrew/opt/mariadb", "/usr/local/opt/mariadb"} {
+		_, err := os.Stat(filepath.Join(prefix, "bin", "mariadbd"))
+		if err == nil {
+			return prefix
+		}
+	}
+
+	return ""
+}
+
+// initializeCommand builds the command that creates the system tables in an empty data directory. MySQL has a mysqld mode for that. MariaDB has a separate install program: a script on Unix, an executable on Windows. Both MariaDB forms create root with an empty password, like --initialize-insecure.
+func initializeCommand(flavor Flavor, serverPath, base, dataDir string, commonArguments []string) *exec.Cmd {
+	if flavor != MariaDB {
+		return exec.Command(serverPath, append(commonArguments, "--initialize-insecure")...)
+	}
+
+	if runtime.GOOS == "windows" {
+		return exec.Command(filepath.Join(base, "bin", "mariadb-install-db.exe"), "--datadir="+dataDir)
+	}
+
+	// The tarballs ship the install script in scripts/. Installed servers, Homebrew for example, ship it in bin/.
+	scriptPath := filepath.Join(base, "scripts", "mariadb-install-db")
+
+	_, err := os.Stat(scriptPath)
+	if err != nil {
+		scriptPath = filepath.Join(base, "bin", "mariadb-install-db")
+	}
+
+	return exec.Command(scriptPath,
+		"--no-defaults",
+		"--basedir="+base,
+		"--datadir="+dataDir,
+		"--auth-root-authentication-method=normal",
+		"--skip-test-db",
+	)
 }
 
 func (m *EmbeddedMySQL) initSQL() string {
@@ -386,7 +498,7 @@ func stopStaleServer(pidFilePath string, logger io.Writer) error {
 	}
 
 	// A pid file that a crash left behind can name a recycled pid. The process name check keeps the signal away from an unrelated process.
-	if !proc.IsMysqld(pid) {
+	if !proc.IsServer(pid) {
 		return nil
 	}
 

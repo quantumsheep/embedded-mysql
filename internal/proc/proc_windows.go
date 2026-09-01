@@ -49,12 +49,14 @@ func Alive(pid int) bool {
 	return err == nil && exitCode == stillActive
 }
 
-// IsMysqld reports whether the process with the given pid runs mysqld.
-func IsMysqld(pid int) bool {
+// IsServer reports whether the process with the given pid runs mysqld or mariadbd.
+func IsServer(pid int) bool {
 	output, err := exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/NH", "/FO", "CSV").Output()
 	if err != nil {
 		return false
 	}
 
-	return strings.Contains(strings.ToLower(string(output)), "mysqld.exe")
+	name := strings.ToLower(string(output))
+
+	return strings.Contains(name, "mysqld.exe") || strings.Contains(name, "mariadbd.exe")
 }

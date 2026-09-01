@@ -25,12 +25,14 @@ func Alive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// IsMysqld reports whether the process with the given pid runs mysqld.
-func IsMysqld(pid int) bool {
+// IsServer reports whether the process with the given pid runs mysqld or mariadbd.
+func IsServer(pid int) bool {
 	output, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return false
 	}
 
-	return strings.HasSuffix(strings.TrimSpace(string(output)), "mysqld")
+	name := strings.TrimSpace(string(output))
+
+	return strings.HasSuffix(name, "mysqld") || strings.HasSuffix(name, "mariadbd")
 }
