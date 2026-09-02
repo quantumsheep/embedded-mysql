@@ -1,4 +1,3 @@
-// Package watchdog stops an orphan child process when the current process dies. The watchdog is a re-executed copy of the current binary, so it needs no shell.
 package watchdog
 
 import (
@@ -13,7 +12,7 @@ import (
 
 const watchedPidEnvironmentVariable = "EMBEDDED_MYSQL_WATCHDOG_PID"
 
-// init turns a re-executed copy of the current binary into the watchdog before its main function runs. The copy blocks on its stdin pipe. When the parent dies, in every death mode, the kernel closes the pipe, and the copy signals the watched process at once.
+// A re-executed copy of the current binary becomes the watchdog here, before its main function runs. The copy blocks on its stdin pipe. When the parent dies, in every death mode, the kernel closes the pipe, and the copy signals the watched process at once.
 func init() {
 	pidText := os.Getenv(watchedPidEnvironmentVariable)
 	if pidText == "" {
@@ -30,14 +29,12 @@ func init() {
 	os.Exit(0)
 }
 
-// Watchdog is one process that watches the current process.
 type Watchdog struct {
 	cmd *exec.Cmd
-	// pipe stays referenced here for the life of the watchdog. A garbage-collected write end closes the pipe and fires the watchdog early.
+	// A garbage-collected write end closes the pipe and fires the watchdog early, so this reference must live as long as the watchdog.
 	pipe *os.File
 }
 
-// Start runs a watchdog for the process with the given pid.
 func Start(pid int) (*Watchdog, error) {
 	executablePath, err := os.Executable()
 	if err != nil {
@@ -68,7 +65,7 @@ func Start(pid int) (*Watchdog, error) {
 	}, nil
 }
 
-// Stop kills the watchdog process and waits for it. Call Stop before the watched process stops. A watchdog that outlives the watched process can send its signal to a recycled pid.
+// Call Stop before the watched process stops. A watchdog that outlives the watched process can send its signal to a recycled pid.
 func (w *Watchdog) Stop() {
 	_ = w.cmd.Process.Kill()
 	_ = w.cmd.Wait()

@@ -1,6 +1,5 @@
 //go:build windows
 
-// Package proc signals and inspects processes by pid on every supported platform.
 package proc
 
 import (
@@ -10,12 +9,11 @@ import (
 	"syscall"
 )
 
-// Terminate stops the process. Windows has no SIGTERM, so Terminate ends the process at once, like Kill.
+// Windows has no SIGTERM, so Terminate ends the process at once, like Kill.
 func Terminate(pid int) error {
 	return Kill(pid)
 }
 
-// Kill force-stops the process.
 func Kill(pid int) error {
 	handle, err := syscall.OpenProcess(syscall.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {
@@ -27,7 +25,6 @@ func Kill(pid int) error {
 	return syscall.TerminateProcess(handle, 1)
 }
 
-// Alive reports whether a process with the given pid exists.
 func Alive(pid int) bool {
 	// STILL_ACTIVE, the exit code of a process that has not exited.
 	const stillActive = 259
@@ -49,7 +46,6 @@ func Alive(pid int) bool {
 	return err == nil && exitCode == stillActive
 }
 
-// IsServer reports whether the process with the given pid runs mysqld or mariadbd.
 func IsServer(pid int) bool {
 	output, err := exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/NH", "/FO", "CSV").Output()
 	if err != nil {

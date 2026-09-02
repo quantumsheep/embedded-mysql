@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/quantumsheep/embedded-mysql/internal/proc"
+	internalserver "github.com/quantumsheep/embedded-mysql/internal/server"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +28,7 @@ func startServer(t *testing.T, config Config) (*EmbeddedMySQL, *sql.DB) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		if server.cmd != nil {
+		if server.server != nil {
 			require.NoError(t, server.Stop())
 		}
 	})
@@ -211,7 +212,7 @@ func TestServerSuite(t *testing.T) {
 
 func TestMariaDB(t *testing.T) {
 	supported := runtime.GOARCH == "amd64" && (runtime.GOOS == "linux" || runtime.GOOS == "windows")
-	if runtime.GOOS == "darwin" && homebrewMariaDB() != "" {
+	if runtime.GOOS == "darwin" && internalserver.HomebrewMariaDB() != "" {
 		supported = true
 	}
 
@@ -285,11 +286,11 @@ func TestStaleServerStop(t *testing.T) {
 		_ = first.Stop()
 	})
 
-	stalePid := first.cmd.Process.Pid
+	stalePid := first.server.Cmd.Process.Pid
 
 	// A stopped watchdog and a skipped Stop reproduce a crash of the whole process group.
-	first.watchdog.Stop()
-	first.watchdog = nil
+	first.server.Watchdog.Stop()
+	first.server.Watchdog = nil
 
 	_, databaseConnection := startServer(t, config)
 
@@ -337,7 +338,7 @@ func TestHelperStartAndExit(t *testing.T) {
 	err := server.Start()
 	require.NoError(t, err)
 
-	fmt.Printf("HELPER_MYSQLD_PID=%d\n", server.cmd.Process.Pid)
+	fmt.Printf("HELPER_MYSQLD_PID=%d\n", server.server.Cmd.Process.Pid)
 
 	// The exit without Stop leaves the server to the watchdog.
 	os.Exit(0)

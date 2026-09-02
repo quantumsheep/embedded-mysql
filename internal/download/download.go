@@ -1,4 +1,3 @@
-// Package download fetches the official MySQL or MariaDB binary tarball and extracts it into the cache.
 package download
 
 import (
@@ -18,7 +17,6 @@ import (
 
 func tarballName(flavor, version string) (string, error) {
 	if flavor == "mariadb" {
-		// MariaDB publishes no official binaries for macOS or Linux arm64.
 		switch {
 		case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
 			return fmt.Sprintf("mariadb-%s-linux-systemd-x86_64.tar.gz", version), nil
@@ -77,7 +75,6 @@ func downloadURLs(flavor, version, name string) []string {
 	}
 }
 
-// Options selects the tarball to fetch and the cache to fill.
 type Options struct {
 	Flavor    string
 	Version   string
@@ -86,7 +83,6 @@ type Options struct {
 	Logger    io.Writer
 }
 
-// EnsureBinaries downloads and extracts the MySQL binaries when the cache does not have them. It returns the base directory that contains bin/mysqld.
 func EnsureBinaries(options Options) (string, error) {
 	cacheDir := options.CachePath
 
@@ -218,7 +214,7 @@ func download(urls []string, destination io.Writer, logger io.Writer) error {
 	return lastError
 }
 
-// keep reports whether an archive entry belongs in the cache: the server binary, the install program of MariaDB with its helpers, the shared libraries of bin/, lib/, share/ and scripts/. The rest of the archive stays out to save disk space.
+// The rest of the archive stays out to save disk space.
 func keep(relativePath string) bool {
 	switch relativePath {
 	case "bin/mysqld", "bin/mysqld.exe",
@@ -235,7 +231,6 @@ func keep(relativePath string) bool {
 		strings.HasPrefix(relativePath, "scripts/")
 }
 
-// extractTar writes the kept entries of the tarball into base. It strips the top-level directory.
 func extractTar(archive io.Reader, isXZ bool, base string) error {
 	var reader io.Reader
 
@@ -308,7 +303,6 @@ func extractTar(archive io.Reader, isXZ bool, base string) error {
 	}
 }
 
-// extractZip writes the kept entries of the zip archive into base. It strips the top-level directory.
 func extractZip(archive *os.File, base string) error {
 	info, err := archive.Stat()
 	if err != nil {
